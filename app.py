@@ -189,10 +189,10 @@ def load_lookups():
 
 def build_manual_manage_df(req_df: pd.DataFrame, manual_df: pd.DataFrame) -> pd.DataFrame:
     result = req_df[["id", "job_id", "resource_class_id"]].copy()
-    result["manual_assigned_ees"] = pd.NA
+    result["manual_assigned_owned"] = pd.NA
 
     if manual_df.empty or "quantity_assigned" not in manual_df.columns:
-        return result[["id", "manual_assigned_ees"]]
+        return result[["id", "manual_assigned_owned"]]
 
     if "requirement_id" in manual_df.columns:
         row_specific = manual_df.loc[manual_df["requirement_id"].notna(), ["requirement_id", "quantity_assigned"]].copy()
@@ -203,7 +203,7 @@ def build_manual_manage_df(req_df: pd.DataFrame, manual_df: pd.DataFrame) -> pd.
         row_specific["requirement_id"] = row_specific["requirement_id"].astype(int)
         row_specific = row_specific.groupby("requirement_id", as_index=False)["quantity_assigned"].sum()
         result = result.merge(row_specific, left_on="id", right_on="requirement_id", how="left")
-        result["manual_assigned_ees"] = result["quantity_assigned"]
+        result["manual_assigned_owned"] = result["quantity_assigned"]
         result = result.drop(columns=["requirement_id", "quantity_assigned"])
 
     legacy_manual = manual_df.copy()
@@ -214,14 +214,14 @@ def build_manual_manage_df(req_df: pd.DataFrame, manual_df: pd.DataFrame) -> pd.
         legacy_manual = legacy_manual.groupby(["job_id", "resource_class_id"], as_index=False)["quantity_assigned"].sum()
         if not legacy_manual.empty:
             result = result.merge(
-                legacy_manual.rename(columns={"quantity_assigned": "legacy_manual_assigned_ees"}),
+                legacy_manual.rename(columns={"quantity_assigned": "legacy_manual_assigned_owned"}),
                 on=["job_id", "resource_class_id"],
                 how="left",
             )
-            result["manual_assigned_ees"] = result["manual_assigned_ees"].fillna(result["legacy_manual_assigned_ees"])
-            result = result.drop(columns=["legacy_manual_assigned_ees"])
+            result["manual_assigned_owned"] = result["manual_assigned_owned"].fillna(result["legacy_manual_assigned_owned"])
+            result = result.drop(columns=["legacy_manual_assigned_owned"])
 
-    return result[["id", "manual_assigned_ees"]]
+    return result[["id", "manual_assigned_owned"]]
 
 def build_rental_manage_df(rental_df: pd.DataFrame) -> pd.DataFrame:
     """Aggregate rental requirements per requirement_id for merging into manage tables.
@@ -445,7 +445,7 @@ def _board_row_edit_dialog(req_row: pd.Series, job_row: pd.Series, active_region
 
         c1, c2, c3 = st.columns(3)
         edit_qty = c1.number_input("Quantity Required", min_value=0.0, value=float(req_row["quantity_required"]), step=step, format=fmt, key=f"{key_prefix}_dlg_qty")
-        edit_assigned_ees = c2.number_input(f"Assigned {COMPANY_NAME}", min_value=0.0, value=float(req_row.get("assigned_ees", 0.0)), step=step, format=fmt, key=f"{key_prefix}_dlg_ees")
+        edit_assigned_owned = c2.number_input(f"Assigned {COMPANY_NAME}", min_value=0.0, value=float(req_row.get("assigned_owned", 0.0)), step=step, format=fmt, key=f"{key_prefix}_dlg_owned")
         edit_assigned_rental = c3.number_input("Assigned Rental", min_value=0.0, value=float(req_row.get("assigned_rental", 0.0)), step=step, format=fmt, key=f"{key_prefix}_dlg_rental")
 
         c4, c5 = st.columns(2)
@@ -463,7 +463,7 @@ def _board_row_edit_dialog(req_row: pd.Series, job_row: pd.Series, active_region
         st.divider()
         col_save_req, col_del_req = st.columns(2)
         if col_save_req.button("💾 Save Requirement", type="primary", use_container_width=True, key=f"{key_prefix}_dlg_save_req"):
-            capped_ees = min(float(edit_assigned_ees), float(edit_qty))
+            capped_owned = min(float(edit_assigned_owned), float(edit_qty))
             update_requirement(engine, int(req_row["id"]), {
                 "resource_class_id": edit_rc_id,
                 "quantity_required": float(edit_qty),
@@ -473,7 +473,7 @@ def _board_row_edit_dialog(req_row: pd.Series, job_row: pd.Series, active_region
                 "notes": edit_req_notes,
             })
             upsert_manual_owned_allocation_for_job_class(
-                engine, int(req_row["job_id"]), int(edit_rc_id), capped_ees,
+                engine, int(req_row["job_id"]), int(edit_rc_id), capped_owned,
                 int(edit_before), int(edit_after), edit_req_notes, requirement_id=int(req_row["id"]),
             )
             upsert_rental_requirement_for_job_class(
@@ -633,7 +633,7 @@ def render_requirements_manage_table(df: pd.DataFrame, key_prefix: str = 'req', 
             render_highlighted_column(cols[2], str(row["job_code"]), fill)
             render_highlighted_column(cols[3], str(row["class_name"]), fill)
             render_highlighted_column(cols[4], format_compact_number(row["quantity_required"]), fill, center=True)
-            render_highlighted_column(cols[5], format_compact_number(row.get("assigned_ees", 0)), fill, center=True)
+            render_highlighted_column(cols[5], format_compact_number(row.get("assigned_owned", 0)), fill, center=True)
             render_highlighted_column(cols[6], format_compact_number(row.get("assigned_rental", 0)), fill, center=True)
             render_highlighted_column(cols[7], str(row.get("allocation_status", "")), fill)
             render_highlighted_column(cols[8], str(row.get("notes", "") or ""), fill)
@@ -643,7 +643,7 @@ def render_requirements_manage_table(df: pd.DataFrame, key_prefix: str = 'req', 
             cols[2].write(str(row["job_code"]))
             cols[3].write(str(row["class_name"]))
             cols[4].write(format_compact_number(row["quantity_required"]))
-            cols[5].write(format_compact_number(row.get("assigned_ees", 0)))
+            cols[5].write(format_compact_number(row.get("assigned_owned", 0)))
             cols[6].write(format_compact_number(row.get("assigned_rental", 0)))
             cols[7].write(str(row.get("allocation_status", "")))
             cols[8].write(str(row.get("notes", "") or ""))
@@ -676,13 +676,13 @@ def render_requirements_manage_table(df: pd.DataFrame, key_prefix: str = 'req', 
                 format=fmt,
                 key=f"{key_prefix}_qty_{row['id']}",
             )
-            edit_assigned_ees = st.number_input(
+            edit_assigned_owned = st.number_input(
                 f"Assigned {COMPANY_NAME}",
                 min_value=0.0,
-                value=float(row.get("assigned_ees", 0.0)),
+                value=float(row.get("assigned_owned", 0.0)),
                 step=step,
                 format=fmt,
-                key=f"{key_prefix}_assigned_ees_{row['id']}",
+                key=f"{key_prefix}_assigned_owned_{row['id']}",
             )
             edit_assigned_rental = st.number_input(
                 "Assigned Rental",
@@ -726,7 +726,7 @@ def render_requirements_manage_table(df: pd.DataFrame, key_prefix: str = 'req', 
             )
             a, b = st.columns(2)
             if a.button("Save", key=f"{key_prefix}_save_{row['id']}"):
-                capped_assigned_ees = min(float(edit_assigned_ees), float(edit_qty))
+                capped_assigned_owned = min(float(edit_assigned_owned), float(edit_qty))
                 update_requirement(
                     engine,
                     int(row["id"]),
@@ -743,7 +743,7 @@ def render_requirements_manage_table(df: pd.DataFrame, key_prefix: str = 'req', 
                     engine,
                     int(row["job_id"]),
                     int(edit_rc_id),
-                    capped_assigned_ees,
+                    capped_assigned_owned,
                     int(edit_before),
                     int(edit_after),
                     edit_notes,
@@ -1058,7 +1058,7 @@ def build_planning_board_data(active_region: str, selected_class: str | None, st
         rental_qty = float(job_rent["quantity_required"].astype(float).sum()) if not job_rent.empty else 0.0
         total_required = float(job_req["quantity_required"].astype(float).sum()) if not job_req.empty else 0.0
 
-        ees_qty = max(total_required - rental_qty, 0.0)
+        owned_qty = max(total_required - rental_qty, 0.0)
         if not job_req.empty:
             job_req_calc = job_req.copy()
             job_req_calc["assigned_rental"] = 0.0
@@ -1102,7 +1102,7 @@ def build_planning_board_data(active_region: str, selected_class: str | None, st
                     manual_by_req = (
                         job_manual.groupby("requirement_id", as_index=False)["quantity_assigned"]
                         .sum()
-                        .rename(columns={"quantity_assigned": "manual_assigned_ees"})
+                        .rename(columns={"quantity_assigned": "manual_assigned_owned"})
                     )
                     job_req_calc = job_req_calc.merge(manual_by_req, left_on="id", right_on="requirement_id", how="left")
                     if "requirement_id" in job_req_calc.columns:
@@ -1111,33 +1111,33 @@ def build_planning_board_data(active_region: str, selected_class: str | None, st
                     manual_by_bucket = (
                         job_manual.groupby(["job_id", "resource_class_id"], as_index=False)["quantity_assigned"]
                         .sum()
-                        .rename(columns={"quantity_assigned": "manual_assigned_ees"})
+                        .rename(columns={"quantity_assigned": "manual_assigned_owned"})
                     )
                     job_req_calc = job_req_calc.merge(manual_by_bucket, on=["job_id", "resource_class_id"], how="left")
 
-            if "manual_assigned_ees" not in job_req_calc.columns:
-                job_req_calc["manual_assigned_ees"] = pd.NA
-            elif "manual_assigned_ees_x" in job_req_calc.columns or "manual_assigned_ees_y" in job_req_calc.columns:
-                left_col = pd.to_numeric(job_req_calc.get("manual_assigned_ees_x"), errors="coerce") if "manual_assigned_ees_x" in job_req_calc.columns else pd.Series(pd.NA, index=job_req_calc.index)
-                right_col = pd.to_numeric(job_req_calc.get("manual_assigned_ees_y"), errors="coerce") if "manual_assigned_ees_y" in job_req_calc.columns else pd.Series(pd.NA, index=job_req_calc.index)
-                job_req_calc["manual_assigned_ees"] = left_col.fillna(right_col)
-                drop_cols = [c for c in ["manual_assigned_ees_x", "manual_assigned_ees_y"] if c in job_req_calc.columns]
+            if "manual_assigned_owned" not in job_req_calc.columns:
+                job_req_calc["manual_assigned_owned"] = pd.NA
+            elif "manual_assigned_owned_x" in job_req_calc.columns or "manual_assigned_owned_y" in job_req_calc.columns:
+                left_col = pd.to_numeric(job_req_calc.get("manual_assigned_owned_x"), errors="coerce") if "manual_assigned_owned_x" in job_req_calc.columns else pd.Series(pd.NA, index=job_req_calc.index)
+                right_col = pd.to_numeric(job_req_calc.get("manual_assigned_owned_y"), errors="coerce") if "manual_assigned_owned_y" in job_req_calc.columns else pd.Series(pd.NA, index=job_req_calc.index)
+                job_req_calc["manual_assigned_owned"] = left_col.fillna(right_col)
+                drop_cols = [c for c in ["manual_assigned_owned_x", "manual_assigned_owned_y"] if c in job_req_calc.columns]
                 if drop_cols:
                     job_req_calc = job_req_calc.drop(columns=drop_cols)
 
             if "assigned_rental" not in job_req_calc.columns:
                 job_req_calc["assigned_rental"] = 0.0
             job_req_calc["assigned_rental"] = pd.to_numeric(job_req_calc["assigned_rental"], errors="coerce").fillna(0.0).astype(float)
-            default_ees = (job_req_calc["quantity_required"].astype(float) - job_req_calc["assigned_rental"]).clip(lower=0)
-            job_req_calc["assigned_ees"] = pd.to_numeric(job_req_calc["manual_assigned_ees"], errors="coerce").fillna(default_ees)
-            ees_qty = float(job_req_calc["assigned_ees"].astype(float).sum())
+            default_owned = (job_req_calc["quantity_required"].astype(float) - job_req_calc["assigned_rental"]).clip(lower=0)
+            job_req_calc["assigned_owned"] = pd.to_numeric(job_req_calc["manual_assigned_owned"], errors="coerce").fillna(default_owned)
+            owned_qty = float(job_req_calc["assigned_owned"].astype(float).sum())
 
         vendors = ", ".join(sorted(set(v for v in job_rent.get("vendor_name", pd.Series(dtype=str)).fillna("").tolist() if str(v).strip())))
         unit_label = str(rec["unit_type"]).title() if str(rec["unit_type"]).lower() == "miles" else str(rec["unit_type"])
 
         breakdown_parts = []
-        if ees_qty > 0:
-            breakdown_parts.append(f"{format_compact_number(ees_qty)} {COMPANY_NAME}")
+        if owned_qty > 0:
+            breakdown_parts.append(f"{format_compact_number(owned_qty)} {COMPANY_NAME}")
         if rental_qty > 0:
             rental_text = f"{format_compact_number(rental_qty)} Rental"
             if vendors:
@@ -1444,7 +1444,7 @@ def render_planning_board(active_region: str, include_excluded: bool = False, se
         manage_df = manage_df.merge(manual_manage_df, on="id", how="left")
 
         # Resolve any suffixed columns from unexpected merges
-        for col in ["quantity_required", "assigned_rental", "rental_vendor", "manual_assigned_ees"]:
+        for col in ["quantity_required", "assigned_rental", "rental_vendor", "manual_assigned_owned"]:
             for suffix in ["_x", "_y"]:
                 if f"{col}{suffix}" in manage_df.columns:
                     if col not in manage_df.columns:
@@ -1453,13 +1453,13 @@ def render_planning_board(active_region: str, include_excluded: bool = False, se
         for col, default in [("assigned_rental", 0.0), ("rental_vendor", "")]:
             if col not in manage_df.columns:
                 manage_df[col] = default
-        if "manual_assigned_ees" not in manage_df.columns:
-            manage_df["manual_assigned_ees"] = None
+        if "manual_assigned_owned" not in manage_df.columns:
+            manage_df["manual_assigned_owned"] = None
         if "quantity_required" not in manage_df.columns:
             manage_df["quantity_required"] = 0.0
         manage_df["quantity_required"] = manage_df["quantity_required"].astype(float)
         manage_df["assigned_rental"] = pd.to_numeric(manage_df["assigned_rental"], errors="coerce").fillna(0.0)
-        manage_df["assigned_ees"] = pd.to_numeric(manage_df["manual_assigned_ees"], errors="coerce").fillna(
+        manage_df["assigned_owned"] = pd.to_numeric(manage_df["manual_assigned_owned"], errors="coerce").fillna(
             (manage_df["quantity_required"] - manage_df["assigned_rental"]).clip(lower=0)
         )
         manage_df["rental_vendor"] = manage_df["rental_vendor"].fillna("")
@@ -1485,7 +1485,7 @@ def render_planning_board(active_region: str, include_excluded: bool = False, se
             render_highlighted_column(cols[2], str(row["job_code"]), fill)
             render_highlighted_column(cols[3], str(row["class_name"]), fill)
             render_highlighted_column(cols[4], format_compact_number(row["quantity_required"]), fill, center=True)
-            render_highlighted_column(cols[5], format_compact_number(row.get("assigned_ees", 0)), fill, center=True)
+            render_highlighted_column(cols[5], format_compact_number(row.get("assigned_owned", 0)), fill, center=True)
             render_highlighted_column(cols[6], format_compact_number(row.get("assigned_rental", 0)), fill, center=True)
             render_highlighted_column(cols[7], str(row.get("allocation_status", "")), fill)
             render_highlighted_column(cols[8], str(row.get("notes", "") or ""), fill)
@@ -1838,7 +1838,7 @@ with tab_job_requirements:
                 manage_df = manage_df.drop(columns=["assigned_rental_leg", "rental_vendor_leg"], errors="ignore")
             manage_df = manage_df.merge(build_manual_manage_df(manage_df, manual_manage), on="id", how="left")
             manage_df["assigned_rental"] = manage_df["assigned_rental"].fillna(0.0)
-            manage_df["assigned_ees"] = manage_df["manual_assigned_ees"].fillna((manage_df["quantity_required"].astype(float) - manage_df["assigned_rental"].astype(float)).clip(lower=0))
+            manage_df["assigned_owned"] = manage_df["manual_assigned_owned"].fillna((manage_df["quantity_required"].astype(float) - manage_df["assigned_rental"].astype(float)).clip(lower=0))
             manage_df["rental_vendor"] = manage_df["rental_vendor"].fillna("")
             render_requirements_manage_table(manage_df, key_prefix="jobreq")
 
@@ -1977,11 +1977,11 @@ with tab_requirements:
             manage_df = manage_df.drop(columns=["assigned_rental_leg", "rental_vendor_leg"], errors="ignore")
         manage_df = manage_df.merge(build_manual_manage_df(manage_df, manual_manage), on="id", how="left")
         manage_df["assigned_rental"] = pd.to_numeric(manage_df["assigned_rental"], errors="coerce").fillna(0.0)
-        manage_df["assigned_ees"] = pd.to_numeric(manage_df["manual_assigned_ees"], errors="coerce").fillna((manage_df["quantity_required"].astype(float) - manage_df["assigned_rental"]).clip(lower=0))
+        manage_df["assigned_owned"] = pd.to_numeric(manage_df["manual_assigned_owned"], errors="coerce").fillna((manage_df["quantity_required"].astype(float) - manage_df["assigned_rental"]).clip(lower=0))
         manage_df["rental_vendor"] = manage_df["rental_vendor"].fillna("")
 
-        display_req = format_dates_for_display(manage_df[["job_code","job_name","region_code","class_name","quantity_required","unit_type","required_start","required_end","assigned_ees","assigned_rental","quantity_shortfall","allocation_status"]].copy())
-        display_req = display_req.rename(columns={"assigned_ees": "assigned_ees", "assigned_rental": "rental"})
+        display_req = format_dates_for_display(manage_df[["job_code","job_name","region_code","class_name","quantity_required","unit_type","required_start","required_end","assigned_owned","assigned_rental","quantity_shortfall","allocation_status"]].copy())
+        display_req = display_req.rename(columns={"assigned_owned": f"Assigned {COMPANY_NAME}", "assigned_rental": "Rental"})
         display_req["region_code"] = display_req["region_code"].map(lambda x: region_format(str(x)))
         st.dataframe(display_req, width="stretch")
 
@@ -2127,13 +2127,13 @@ with tab_planning:
                 for col, default in [("assigned_rental", 0.0), ("rental_vendor", "")]:
                     if col not in manage_df_ex.columns:
                         manage_df_ex[col] = default
-                if "manual_assigned_ees" not in manage_df_ex.columns:
-                    manage_df_ex["manual_assigned_ees"] = None
+                if "manual_assigned_owned" not in manage_df_ex.columns:
+                    manage_df_ex["manual_assigned_owned"] = None
                 if "quantity_required" not in manage_df_ex.columns:
                     manage_df_ex["quantity_required"] = 0.0
                 manage_df_ex["quantity_required"] = manage_df_ex["quantity_required"].astype(float)
                 manage_df_ex["assigned_rental"] = pd.to_numeric(manage_df_ex["assigned_rental"], errors="coerce").fillna(0.0)
-                manage_df_ex["assigned_ees"] = pd.to_numeric(manage_df_ex["manual_assigned_ees"], errors="coerce").fillna(
+                manage_df_ex["assigned_owned"] = pd.to_numeric(manage_df_ex["manual_assigned_owned"], errors="coerce").fillna(
                     (manage_df_ex["quantity_required"] - manage_df_ex["assigned_rental"]).clip(lower=0))
                 manage_df_ex["rental_vendor"] = manage_df_ex["rental_vendor"].fillna("")
                 manage_df_ex = sort_requirements_like_board(manage_df_ex, board_df_ex)
@@ -2154,7 +2154,7 @@ with tab_planning:
                     render_highlighted_column(cols[2], str(row["job_code"]), fill)
                     render_highlighted_column(cols[3], str(row["class_name"]), fill)
                     render_highlighted_column(cols[4], format_compact_number(row["quantity_required"]), fill, center=True)
-                    render_highlighted_column(cols[5], format_compact_number(row.get("assigned_ees", 0)), fill, center=True)
+                    render_highlighted_column(cols[5], format_compact_number(row.get("assigned_owned", 0)), fill, center=True)
                     render_highlighted_column(cols[6], format_compact_number(row.get("assigned_rental", 0)), fill, center=True)
                     render_highlighted_column(cols[7], str(row.get("allocation_status", "")), fill)
                     render_highlighted_column(cols[8], str(row.get("notes", "") or ""), fill)

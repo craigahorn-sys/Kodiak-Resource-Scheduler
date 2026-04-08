@@ -48,8 +48,7 @@ def create_job(engine, data: dict) -> int:
                 :demob_days_after_job, :status, :notes
             ) RETURNING id
         """), {**data, "job_code": job_code, "job_start_date": dates["job_start_date"], "customer_color": data.get("customer_color", "")})
-        row = res.fetchone()
-    return int(row[0])
+        return int(res.scalar_one())
 
 
 def update_job(engine, job_id: int, data: dict):
@@ -310,8 +309,7 @@ def create_requirement(engine, data: dict):
             VALUES (:job_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :priority, :notes)
             RETURNING id
         """), data)
-        row = res.fetchone()
-        requirement_id = int(row[0])
+        requirement_id = int(res.scalar_one())
     recalc_all_requirements(engine)
     return requirement_id
 
@@ -608,8 +606,7 @@ def create_rental_requirement(engine, data: dict):
                 :job_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :vendor_name, :notes
             ) RETURNING id
         """), data)
-        row = res.fetchone()
-        rental_id = int(row[0])
+        rental_id = int(res.scalar_one())
     recalc_all_requirements(engine)
     return rental_id
 
@@ -661,8 +658,7 @@ def create_manual_owned_allocation(engine, data: dict):
                 :job_id, :resource_class_id, :quantity_assigned, :days_before_job_start, :days_after_job_end, :notes
             ) RETURNING id
         """), data)
-        row = res.fetchone()
-    return int(row[0])
+        return int(res.scalar_one())
 
 
 def delete_manual_owned_allocation(engine, manual_allocation_id: int):

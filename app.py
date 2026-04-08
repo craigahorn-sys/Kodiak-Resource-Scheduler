@@ -19,8 +19,13 @@ from services.scheduler import (
     upsert_manual_owned_allocation_for_job_class, upsert_rental_requirement_for_job_class,
 )
 
-st.set_page_config(page_title="Resource Scheduler V2", layout="wide")
-st.title("Resource Scheduler V2")
+# ── Company branding ─────────────────────────────────────────────────────────
+# Change COMPANY_NAME here to rebrand the app for a different business.
+COMPANY_NAME = "Kodiak"
+# ─────────────────────────────────────────────────────────────────────────────
+
+st.set_page_config(page_title=f"{COMPANY_NAME} Resource Scheduler", layout="wide")
+st.title(f"{COMPANY_NAME} Resource Scheduler")
 
 EXCLUDED_CALC_STATUSES = {"Bid", "Awarded"}
 
@@ -440,7 +445,7 @@ def _board_row_edit_dialog(req_row: pd.Series, job_row: pd.Series, active_region
 
         c1, c2, c3 = st.columns(3)
         edit_qty = c1.number_input("Quantity Required", min_value=0.0, value=float(req_row["quantity_required"]), step=step, format=fmt, key=f"{key_prefix}_dlg_qty")
-        edit_assigned_ees = c2.number_input("Assigned EES", min_value=0.0, value=float(req_row.get("assigned_ees", 0.0)), step=step, format=fmt, key=f"{key_prefix}_dlg_ees")
+        edit_assigned_ees = c2.number_input(f"Assigned {COMPANY_NAME}", min_value=0.0, value=float(req_row.get("assigned_ees", 0.0)), step=step, format=fmt, key=f"{key_prefix}_dlg_ees")
         edit_assigned_rental = c3.number_input("Assigned Rental", min_value=0.0, value=float(req_row.get("assigned_rental", 0.0)), step=step, format=fmt, key=f"{key_prefix}_dlg_rental")
 
         c4, c5 = st.columns(2)
@@ -607,7 +612,7 @@ def render_requirements_manage_table(df: pd.DataFrame, key_prefix: str = 'req', 
         return
 
     widths = [1.15, 1.35, 0.95, 1.2, 0.85, 0.9, 0.9, 1.0, 1.2, 0.8]
-    headers = ["Customer", "Job Name", "Job Code", "Class", "Quantity", "Assigned EES", "Assigned Rental", "Status", "Notes", "Manage"]
+    headers = ["Customer", "Job Name", "Job Code", "Class", "Quantity", f"Assigned {COMPANY_NAME}", "Assigned Rental", "Status", "Notes", "Manage"]
 
     hdr = st.columns(widths)
     for c, h in zip(hdr, headers):
@@ -672,7 +677,7 @@ def render_requirements_manage_table(df: pd.DataFrame, key_prefix: str = 'req', 
                 key=f"{key_prefix}_qty_{row['id']}",
             )
             edit_assigned_ees = st.number_input(
-                "Assigned EES",
+                f"Assigned {COMPANY_NAME}",
                 min_value=0.0,
                 value=float(row.get("assigned_ees", 0.0)),
                 step=step,
@@ -1132,7 +1137,7 @@ def build_planning_board_data(active_region: str, selected_class: str | None, st
 
         breakdown_parts = []
         if ees_qty > 0:
-            breakdown_parts.append(f"{format_compact_number(ees_qty)} EES")
+            breakdown_parts.append(f"{format_compact_number(ees_qty)} {COMPANY_NAME}")
         if rental_qty > 0:
             rental_text = f"{format_compact_number(rental_qty)} Rental"
             if vendors:
@@ -1464,7 +1469,7 @@ def render_planning_board(active_region: str, include_excluded: bool = False, se
         all_jobs_lookup = region_filter(get_jobs_df(engine), active_region)
 
         widths = [1.15, 1.35, 0.95, 1.2, 0.85, 0.9, 0.9, 1.0, 1.2, 0.8]
-        headers = ["Customer", "Job Name", "Job Code", "Class", "Quantity", "Assigned EES", "Assigned Rental", "Status", "Notes", "Manage"]
+        headers = ["Customer", "Job Name", "Job Code", "Class", "Quantity", f"Assigned {COMPANY_NAME}", "Assigned Rental", "Status", "Notes", "Manage"]
         hdr = st.columns(widths)
         for c, h in zip(hdr, headers):
             c.markdown(f"**{h}**")
@@ -1952,6 +1957,9 @@ with tab_requirements:
         st.info("No requirements yet.")
     else:
         req_summary = sort_requirements_by_class_order(req_summary)
+        display_req = format_dates_for_display(req_summary[["job_code","job_name","region_code","class_name","quantity_required","unit_type","required_start","required_end","quantity_assigned","quantity_shortfall","allocation_status"]])
+        display_req["region_code"] = display_req["region_code"].map(lambda x: region_format(str(x)))
+        st.dataframe(display_req, width="stretch")
         rental_manage = region_filter(get_rental_requirements_df(engine), ACTIVE_REGION)
         rental_manage = build_rental_manage_df(rental_manage)
         manual_manage = region_filter(get_manual_owned_allocations_df(engine), ACTIVE_REGION)
@@ -1971,15 +1979,9 @@ with tab_requirements:
             manage_df["rental_vendor"] = manage_df["rental_vendor"].fillna(manage_df["rental_vendor_leg"])
             manage_df = manage_df.drop(columns=["assigned_rental_leg", "rental_vendor_leg"], errors="ignore")
         manage_df = manage_df.merge(build_manual_manage_df(manage_df, manual_manage), on="id", how="left")
-        manage_df["assigned_rental"] = pd.to_numeric(manage_df["assigned_rental"], errors="coerce").fillna(0.0)
-        manage_df["assigned_ees"] = pd.to_numeric(manage_df["manual_assigned_ees"], errors="coerce").fillna((manage_df["quantity_required"].astype(float) - manage_df["assigned_rental"]).clip(lower=0))
+        manage_df["assigned_rental"] = manage_df["assigned_rental"].fillna(0.0)
+        manage_df["assigned_ees"] = manage_df["manual_assigned_ees"].fillna((manage_df["quantity_required"].astype(float) - manage_df["assigned_rental"].astype(float)).clip(lower=0))
         manage_df["rental_vendor"] = manage_df["rental_vendor"].fillna("")
-
-        display_req = format_dates_for_display(manage_df[["job_code","job_name","region_code","class_name","quantity_required","unit_type","required_start","required_end","assigned_ees","assigned_rental","quantity_shortfall","allocation_status"]].copy())
-        display_req = display_req.rename(columns={"assigned_ees": "assigned_ees", "assigned_rental": "rental"})
-        display_req["region_code"] = display_req["region_code"].map(lambda x: region_format(str(x)))
-        st.dataframe(display_req, width="stretch")
-
         manage_df = sort_requirements_by_class_order(manage_df)
         render_requirements_manage_table(manage_df)
 
@@ -2135,7 +2137,7 @@ with tab_planning:
                 all_jobs_lookup_ex = region_filter(get_jobs_df(engine), ACTIVE_REGION)
                 st.markdown("##### Manage Jobs & Requirements Shown on Board")
                 widths = [1.15, 1.35, 0.95, 1.2, 0.85, 0.9, 0.9, 1.0, 1.2, 0.8]
-                headers = ["Customer", "Job Name", "Job Code", "Class", "Quantity", "Assigned EES", "Assigned Rental", "Status", "Notes", "Manage"]
+                headers = ["Customer", "Job Name", "Job Code", "Class", "Quantity", f"Assigned {COMPANY_NAME}", "Assigned Rental", "Status", "Notes", "Manage"]
                 hdr = st.columns(widths)
                 for c, h in zip(hdr, headers):
                     c.markdown(f"**{h}**")

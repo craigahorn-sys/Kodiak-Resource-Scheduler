@@ -123,7 +123,90 @@ def _windows_overlap(start_a, end_a, start_b, end_b) -> bool:
     return pd.to_datetime(start_a) <= pd.to_datetime(end_b) and pd.to_datetime(end_a) >= pd.to_datetime(start_b)
 
 
+def _migrate_null_requirement_ids(engine):
+    """
+    One-time migration that runs on every recalc: finds manual_owned_allocations
+    records with requirement_id=NULL and links them to the correct job_requirement
+    row by job_id + resource_class_id. Where exactly one match exists the id is
+    written in-place. Where multiple requirements share the same job/class the
+    quantity is split evenly across them. Duplicate NULL records for the same
+    job/class are consolidated before matching.
+    """
+    null_records = query_df(engine, """
+        SELECT id, job_id, resource_class_id, quantity_assigned,
+               days_before_job_start, days_after_job_end, notes
+        FROM job_manual_owned_allocations
+        WHERE requirement_id IS NULL
+    """)
+    if null_records.empty:
+        return
+
+    reqs = query_df(engine, """
+        SELECT id AS requirement_id, job_id, resource_class_id
+        FROM job_requirements
+    """)
+    if reqs.empty:
+        return
+
+    # Consolidate multiple NULL records for the same job/class into one quantity
+    consolidated = null_records.groupby(
+        ["job_id", "resource_class_id"], as_index=False
+    ).agg(
+        quantity_assigned=("quantity_assigned", "sum"),
+        days_before_job_start=("days_before_job_start", "first"),
+        days_after_job_end=("days_after_job_end", "first"),
+        notes=("notes", "first"),
+        null_ids=("id", list),
+    )
+
+    with engine.begin() as conn:
+        for _, row in consolidated.iterrows():
+            matches = reqs[
+                (reqs["job_id"] == row["job_id"]) &
+                (reqs["resource_class_id"] == row["resource_class_id"])
+            ]
+            if matches.empty:
+                continue
+
+            # Delete all the NULL records for this job/class
+            for null_id in row["null_ids"]:
+                conn.execute(
+                    text("DELETE FROM job_manual_owned_allocations WHERE id=:id"),
+                    {"id": int(null_id)},
+                )
+
+            # Also delete any existing requirement_id-linked records for these
+            # requirements so we don't create duplicates
+            for req_id in matches["requirement_id"].tolist():
+                conn.execute(
+                    text("DELETE FROM job_manual_owned_allocations WHERE requirement_id=:rid"),
+                    {"rid": int(req_id)},
+                )
+
+            # Distribute quantity evenly across matched requirements
+            qty_each = float(row["quantity_assigned"]) / len(matches)
+            for req_id in matches["requirement_id"].tolist():
+                conn.execute(text("""
+                    INSERT INTO job_manual_owned_allocations(
+                        job_id, requirement_id, resource_class_id,
+                        quantity_assigned, days_before_job_start, days_after_job_end, notes
+                    ) VALUES (
+                        :job_id, :requirement_id, :resource_class_id,
+                        :quantity_assigned, :days_before_job_start, :days_after_job_end, :notes
+                    )
+                """), {
+                    "job_id": int(row["job_id"]),
+                    "requirement_id": int(req_id),
+                    "resource_class_id": int(row["resource_class_id"]),
+                    "quantity_assigned": qty_each,
+                    "days_before_job_start": int(row["days_before_job_start"]),
+                    "days_after_job_end": int(row["days_after_job_end"]),
+                    "notes": str(row["notes"] or ""),
+                })
+
+
 def recalc_all_requirements(engine):
+    _migrate_null_requirement_ids(engine)
     req = _requirement_base_df(engine)
     manual_df = _manual_owned_allocations_base_df(engine)
     with engine.begin() as conn:
@@ -148,14 +231,27 @@ def recalc_all_requirements(engine):
 
             manual_target = None
             if not manual_df.empty:
-                manual_match = manual_df[
-                    (manual_df["job_id"] == row["job_id"]) &
-                    (manual_df["resource_class_id"] == row["resource_class_id"]) &
-                    (pd.to_datetime(manual_df["required_start"]) <= pd.to_datetime(row["required_end"])) &
-                    (pd.to_datetime(manual_df["required_end"]) >= pd.to_datetime(row["required_start"]))
-                ]
-                if not manual_match.empty:
-                    manual_target = float(manual_match["quantity_assigned"].astype(float).sum())
+                row_specific_match = pd.DataFrame()
+                if "requirement_id" in manual_df.columns:
+                    row_specific_match = manual_df.loc[manual_df["requirement_id"] == row["id"]].copy()
+                if not row_specific_match.empty:
+                    manual_target = float(row_specific_match["quantity_assigned"].astype(float).sum())
+                else:
+                    manual_match = manual_df[
+                        (manual_df["job_id"] == row["job_id"]) &
+                        (manual_df["resource_class_id"] == row["resource_class_id"])
+                    ].copy()
+                    if "requirement_id" in manual_match.columns:
+                        manual_match = manual_match.loc[manual_match["requirement_id"].isna()].copy()
+                    if not manual_match.empty:
+                        same_bucket_count = int(req.loc[(req["job_id"] == row["job_id"]) & (req["resource_class_id"] == row["resource_class_id"])].shape[0])
+                        if same_bucket_count == 1:
+                            overlap_match = manual_match[
+                                (pd.to_datetime(manual_match["required_start"]) <= pd.to_datetime(row["required_end"])) &
+                                (pd.to_datetime(manual_match["required_end"]) >= pd.to_datetime(row["required_start"]))
+                            ]
+                            if not overlap_match.empty:
+                                manual_target = float(overlap_match["quantity_assigned"].astype(float).sum())
 
             target_qty = float(row["quantity_required"]) if manual_target is None else min(float(row["quantity_required"]), float(manual_target))
             assign_qty = min(target_qty, available)
@@ -423,6 +519,7 @@ def _rental_requirements_base_df(engine):
         SELECT
             rr.id,
             rr.job_id,
+            rr.requirement_id,
             rr.resource_class_id,
             rr.quantity_required,
             rr.days_before_job_start,
@@ -464,6 +561,7 @@ def _manual_owned_allocations_base_df(engine):
         SELECT
             mo.id,
             mo.job_id,
+            mo.requirement_id,
             mo.resource_class_id,
             mo.quantity_assigned,
             mo.days_before_job_start,
@@ -522,18 +620,25 @@ def get_rental_requirements_df(engine):
     return _rental_requirements_base_df(engine)
 
 
-def upsert_rental_requirement_for_job_class(engine, job_id: int, resource_class_id: int, quantity_required: float, days_before_job_start: int, days_after_job_end: int, vendor_name: str, notes: str = ""):
+def upsert_rental_requirement_for_job_class(engine, job_id: int, resource_class_id: int, quantity_required: float, days_before_job_start: int, days_after_job_end: int, vendor_name: str, notes: str = "", requirement_id: int | None = None):
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM job_rental_requirements WHERE job_id=:job_id AND resource_class_id=:resource_class_id"), {"job_id": int(job_id), "resource_class_id": int(resource_class_id)})
+        if requirement_id is not None:
+            # Delete only the rental record tied to this specific requirement
+            conn.execute(text("DELETE FROM job_rental_requirements WHERE requirement_id=:requirement_id"), {"requirement_id": int(requirement_id)})
+            # Also clean up any legacy NULL-requirement_id records for this job/class
+            conn.execute(text("DELETE FROM job_rental_requirements WHERE job_id=:job_id AND resource_class_id=:resource_class_id AND requirement_id IS NULL"), {"job_id": int(job_id), "resource_class_id": int(resource_class_id)})
+        else:
+            conn.execute(text("DELETE FROM job_rental_requirements WHERE job_id=:job_id AND resource_class_id=:resource_class_id"), {"job_id": int(job_id), "resource_class_id": int(resource_class_id)})
         if float(quantity_required) > 0:
             conn.execute(text("""
                 INSERT INTO job_rental_requirements(
-                    job_id, resource_class_id, quantity_required, days_before_job_start, days_after_job_end, vendor_name, notes
+                    job_id, requirement_id, resource_class_id, quantity_required, days_before_job_start, days_after_job_end, vendor_name, notes
                 ) VALUES (
-                    :job_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :vendor_name, :notes
+                    :job_id, :requirement_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :vendor_name, :notes
                 )
             """), {
                 "job_id": int(job_id),
+                "requirement_id": int(requirement_id) if requirement_id is not None else None,
                 "resource_class_id": int(resource_class_id),
                 "quantity_required": float(quantity_required),
                 "days_before_job_start": int(days_before_job_start),
@@ -561,18 +666,34 @@ def delete_manual_owned_allocation(engine, manual_allocation_id: int):
     recalc_all_requirements(engine)
 
 
-def upsert_manual_owned_allocation_for_job_class(engine, job_id: int, resource_class_id: int, quantity_assigned: float, days_before_job_start: int, days_after_job_end: int, notes: str = ""):
+def upsert_manual_owned_allocation_for_job_class(engine, job_id: int, resource_class_id: int, quantity_assigned: float, days_before_job_start: int, days_after_job_end: int, notes: str = "", requirement_id: int | None = None):
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM job_manual_owned_allocations WHERE job_id=:job_id AND resource_class_id=:resource_class_id"), {"job_id": int(job_id), "resource_class_id": int(resource_class_id)})
-        if float(quantity_assigned) > 0:
-            conn.execute(text("""
+        if requirement_id is not None:
+            # Delete the record tied to this specific requirement
+            conn.execute(
+                text("DELETE FROM job_manual_owned_allocations WHERE requirement_id=:requirement_id"),
+                {"requirement_id": int(requirement_id)},
+            )
+            # Also clean up any legacy NULL-requirement_id records for the same job/class
+            # (created before requirement_id column existed, or via old save paths)
+            conn.execute(
+                text("DELETE FROM job_manual_owned_allocations WHERE job_id=:job_id AND resource_class_id=:resource_class_id AND requirement_id IS NULL"),
+                {"job_id": int(job_id), "resource_class_id": int(resource_class_id)},
+            )
+        else:
+            conn.execute(
+                text("DELETE FROM job_manual_owned_allocations WHERE job_id=:job_id AND resource_class_id=:resource_class_id AND requirement_id IS NULL"),
+                {"job_id": int(job_id), "resource_class_id": int(resource_class_id)},
+            )
+        conn.execute(text("""
                 INSERT INTO job_manual_owned_allocations(
-                    job_id, resource_class_id, quantity_assigned, days_before_job_start, days_after_job_end, notes
+                    job_id, requirement_id, resource_class_id, quantity_assigned, days_before_job_start, days_after_job_end, notes
                 ) VALUES (
-                    :job_id, :resource_class_id, :quantity_assigned, :days_before_job_start, :days_after_job_end, :notes
+                    :job_id, :requirement_id, :resource_class_id, :quantity_assigned, :days_before_job_start, :days_after_job_end, :notes
                 )
             """), {
                 "job_id": int(job_id),
+                "requirement_id": int(requirement_id) if requirement_id is not None else None,
                 "resource_class_id": int(resource_class_id),
                 "quantity_assigned": float(quantity_assigned),
                 "days_before_job_start": int(days_before_job_start),

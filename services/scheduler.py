@@ -36,19 +36,18 @@ def _next_job_code(engine, region_code: str, year: int) -> str:
 def create_job(engine, data: dict) -> int:
     dates = calc_job_dates(data["job_start_date"], data["job_duration_days"], data["mob_days_before_job"], data["demob_days_after_job"])
     job_code = _next_job_code(engine, data["region_code"], pd.to_datetime(data["job_start_date"]).year)
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO jobs(
-                job_code, job_name, region_code, customer, customer_color, location,
-                job_start_date, job_duration_days, mob_days_before_job,
-                demob_days_after_job, status, notes
-            ) VALUES (
-                :job_code, :job_name, :region_code, :customer, :customer_color, :location,
-                :job_start_date, :job_duration_days, :mob_days_before_job,
-                :demob_days_after_job, :status, :notes
-            )
-        """), {**data, "job_code": job_code, "job_start_date": dates["job_start_date"], "customer_color": data.get("customer_color", "")})
-        job_id = conn.execute(text("SELECT id FROM jobs WHERE job_code = :job_code"), {"job_code": job_code}).scalar()
+    execute(engine, """
+        INSERT INTO jobs(
+            job_code, job_name, region_code, customer, customer_color, location,
+            job_start_date, job_duration_days, mob_days_before_job,
+            demob_days_after_job, status, notes
+        ) VALUES (
+            :job_code, :job_name, :region_code, :customer, :customer_color, :location,
+            :job_start_date, :job_duration_days, :mob_days_before_job,
+            :demob_days_after_job, :status, :notes
+        )
+    """, {**data, "job_code": job_code, "job_start_date": dates["job_start_date"], "customer_color": data.get("customer_color", "")})
+    job_id = _scalar(engine, "SELECT id FROM jobs WHERE job_code = :job_code", {"job_code": job_code})
     return int(job_id)
 
 
@@ -304,12 +303,15 @@ def delete_pool_adjustment(engine, adjustment_id: int):
 
 
 def create_requirement(engine, data: dict):
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO job_requirements(job_id, resource_class_id, quantity_required, days_before_job_start, days_after_job_end, priority, notes)
-            VALUES (:job_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :priority, :notes)
-        """), data)
-        requirement_id = int(conn.execute(text("SELECT lastval()")).scalar())
+    execute(engine, """
+        INSERT INTO job_requirements(job_id, resource_class_id, quantity_required, days_before_job_start, days_after_job_end, priority, notes)
+        VALUES (:job_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :priority, :notes)
+    """, data)
+    requirement_id = int(_scalar(engine, """
+        SELECT id FROM job_requirements
+        WHERE job_id=:job_id AND resource_class_id=:resource_class_id
+        ORDER BY id DESC LIMIT 1
+    """, {"job_id": data["job_id"], "resource_class_id": data["resource_class_id"]}))
     recalc_all_requirements(engine)
     return requirement_id
 
@@ -598,15 +600,18 @@ def _manual_owned_allocations_base_df(engine):
 
 
 def create_rental_requirement(engine, data: dict):
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO job_rental_requirements(
-                job_id, resource_class_id, quantity_required, days_before_job_start, days_after_job_end, vendor_name, notes
-            ) VALUES (
-                :job_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :vendor_name, :notes
-            )
-        """), data)
-        rental_id = int(conn.execute(text("SELECT lastval()")).scalar())
+    execute(engine, """
+        INSERT INTO job_rental_requirements(
+            job_id, resource_class_id, quantity_required, days_before_job_start, days_after_job_end, vendor_name, notes
+        ) VALUES (
+            :job_id, :resource_class_id, :quantity_required, :days_before_job_start, :days_after_job_end, :vendor_name, :notes
+        )
+    """, data)
+    rental_id = int(_scalar(engine, """
+        SELECT id FROM job_rental_requirements
+        WHERE job_id=:job_id AND resource_class_id=:resource_class_id
+        ORDER BY id DESC LIMIT 1
+    """, {"job_id": data["job_id"], "resource_class_id": data["resource_class_id"]}))
     recalc_all_requirements(engine)
     return rental_id
 
@@ -650,15 +655,18 @@ def upsert_rental_requirement_for_job_class(engine, job_id: int, resource_class_
 
 
 def create_manual_owned_allocation(engine, data: dict):
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO job_manual_owned_allocations(
-                job_id, resource_class_id, quantity_assigned, days_before_job_start, days_after_job_end, notes
-            ) VALUES (
-                :job_id, :resource_class_id, :quantity_assigned, :days_before_job_start, :days_after_job_end, :notes
-            )
-        """), data)
-        return int(conn.execute(text("SELECT lastval()")).scalar())
+    execute(engine, """
+        INSERT INTO job_manual_owned_allocations(
+            job_id, resource_class_id, quantity_assigned, days_before_job_start, days_after_job_end, notes
+        ) VALUES (
+            :job_id, :resource_class_id, :quantity_assigned, :days_before_job_start, :days_after_job_end, :notes
+        )
+    """, data)
+    return int(_scalar(engine, """
+        SELECT id FROM job_manual_owned_allocations
+        WHERE job_id=:job_id AND resource_class_id=:resource_class_id
+        ORDER BY id DESC LIMIT 1
+    """, {"job_id": data["job_id"], "resource_class_id": data["resource_class_id"]}))
 
 
 def delete_manual_owned_allocation(engine, manual_allocation_id: int):
